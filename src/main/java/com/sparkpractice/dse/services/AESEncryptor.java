@@ -1,24 +1,22 @@
 package com.sparkpractice.dse.services;
 
 
-import lombok.RequiredArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Setter;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 
 import static org.apache.spark.sql.functions.*;
 
-@RequiredArgsConstructor
+@Builder
+@AllArgsConstructor
 public class AESEncryptor {
 
-    private final String[] columnList;
-
-    private static final String key;
-
-    static {
-        if ((key = System.getenv("AES_ENCRYPT_KEY")) == null) {
-            throw new RuntimeException("AES_ENCRYPT_KEY is not provided");
-        }
-    }
+    @Setter
+    @Builder.Default
+    private String[] columnList = new String[]{};
+    private final String key;
 
     public Dataset<Row> aesEncrypt(Dataset<Row> inputDf) {
         for (String attribute: columnList) {
