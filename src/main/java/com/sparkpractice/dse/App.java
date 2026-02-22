@@ -1,10 +1,14 @@
 package com.sparkpractice.dse;
 
+import com.azure.identity.DefaultAzureCredential;
+import com.azure.identity.DefaultAzureCredentialBuilder;
+import com.azure.security.keyvault.secrets.SecretClient;
+import com.azure.security.keyvault.secrets.SecretClientBuilder;
 import com.opencagedata.jopencage.model.JOpenCageLatLng;
 import com.sparkpractice.dse.models.AddressCoords;
 import com.sparkpractice.dse.udfs.GeoHashUDF;
 import com.sparkpractice.dse.services.GeoCodesHandler;
-import com.sparkpractice.dse.utils.Utils;
+import com.sparkpractice.dse.utils.SchemaManager;
 import com.sparkpractice.dse.services.AESEncryptor;
 
 import org.apache.spark.sql.*;
@@ -22,11 +26,22 @@ public class App {
 
     public static void main(String[] args) {
 
+        DefaultAzureCredential credential = new DefaultAzureCredentialBuilder()
+            .managedIdentityClientId(System.getenv("CLIENT_ID"))
+            .build();
+
+        SecretClient vaultClient = new SecretClientBuilder()
+                .vaultUrl("https://"+System.getenv("KEY_VAULT_NAME")+".vault.azure.net")
+                .credential(credential)
+                .buildClient();
+
+        GeoCodesHandler geoCodesHandlerClient = new GeoCodesHandler(vaultClient.getSecret("open-cage-api-key").getValue());
+
         SparkSession spark = SparkSession
-                .builder()
-                .master("local[*]")
-                .appName("SparkBasics")
-                .getOrCreate();
+            .builder()
+            .master("local[*]")
+            .appName("SparkBasics")
+            .getOrCreate();
 
         spark.udf().register("geohash", new GeoHashUDF(), DataTypes.StringType);
 
@@ -34,7 +49,7 @@ public class App {
         DataFrameReader HotelCSVDataFrameReader = null;
 
         try {
-            hotelSchema = Utils.getSchema("src/main/resources/schemas/hotel.json");
+            hotelSchema = SchemaManager.getSchemaFromFile("src/main/resources/schemas/hotel.json");
         } catch (IOException e) {
             System.out.println("caught exception reading the schema");
             System.out.println(e.getMessage());
@@ -59,7 +74,7 @@ public class App {
         Dataset<Row> hotelOrphanCoordinatesDF = hotelDF.filter(col("latitude").isNull().or(col("longitude").isNull()));
         List<Row> hotelOrphanCoordinatesRowList = hotelOrphanCoordinatesDF.select(col("AddressConcat")).distinct().collectAsList();
         List<String> hotelOrphanCoordinatesList = hotelOrphanCoordinatesRowList.stream().map(x -> (String) x.getAs("AddressConcat")).collect(Collectors.toList());
-        Map<String, Optional<JOpenCageLatLng>> addressCoordMap = GeoCodesHandler.getBatchCoordinatesBasedOnAddressList(hotelOrphanCoordinatesList);
+        Map<String, Optional<JOpenCageLatLng>> addressCoordMap = geoCodesHandlerClient.getBatchCoordinatesBasedOnAddressList(hotelOrphanCoordinatesList);
         List<AddressCoords> AddressCoordsList = new ArrayList<>();
         addressCoordMap.forEach((k, v) -> {
             Double latitude = v.isPresent() ? v.get().getLat(): Double.NaN;
@@ -119,10 +134,11 @@ public class App {
                 col("w.day")
         );
 
-        AESEncryptor encryptor = new AESEncryptor(new String[]{"name", "address"});
+        AESEncryptor encryptor = AESEncryptor.builder().key(vaultClient.getSecret("aes-encryption-key").getValue()).build();
+        encryptor.setColumnList(new String[]{"name", "address"});
         joinedDF = joinedDF.transform(encryptor::aesEncrypt);
 
-        joinedDF.write().format("parquet").partitionBy("year", "month", "day").save("/mnt/sharedfolder1/m06sparkbasics/refined_data");
+        joinedDF.write().mode("overwrite").format("parquet").partitionBy("year", "month", "day").save("/mnt/sharedfolder1/m06sparkbasics/refined_data");
 
         spark.close();
     }
