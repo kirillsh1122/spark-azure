@@ -10,18 +10,13 @@ import java.util.*;
 
 public class GeoCodesHandler {
 
-    private static final JOpenCageGeocoder jOpenCageGeocoder;
+    private final JOpenCageGeocoder jOpenCageGeocoder;
 
-    static {
-        String OPEN_CAGE_API_KEY;
-        if ((OPEN_CAGE_API_KEY = System.getenv("OPEN_CAGE_API_KEY")) != null) {
-            jOpenCageGeocoder = new JOpenCageGeocoder(OPEN_CAGE_API_KEY);
-        } else {
-            throw new RuntimeException("OPEN_CAGE_API_KEY is not provided");
-        }
+    public GeoCodesHandler(String OPEN_CAGE_API_KEY) {
+        jOpenCageGeocoder = new JOpenCageGeocoder(OPEN_CAGE_API_KEY);
     }
 
-    public static Map<String, Optional<JOpenCageLatLng>> getBatchCoordinatesBasedOnAddressList(List<String> listOfAddresses) {
+    public Map<String, Optional<JOpenCageLatLng>> getBatchCoordinatesBasedOnAddressList(List<String> listOfAddresses) {
         Map<String, Optional<JOpenCageLatLng>> mapOfCoordinates = new HashMap<>();
         for (String address : listOfAddresses) {
             JOpenCageForwardRequest request = new JOpenCageForwardRequest(address);
