@@ -46,3 +46,6 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+/src/main/java/com/sparkpractice/dse/AppOperations.java
+/docker/hadoop-3.3.4.tar.gz
+/docker/spark-3.5.8-bin-without-hadoop.tgz
