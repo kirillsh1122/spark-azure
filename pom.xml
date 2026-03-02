@@ -17,7 +17,7 @@
     <scala.major.version>2.12</scala.major.version>
 
     <spark.version>3.5.8</spark.version>
-    <hadoop.version>3.4.0</hadoop.version>
+    <hadoop.version>3.3.4</hadoop.version>
 
     <isTestSkip>false</isTestSkip>
 
