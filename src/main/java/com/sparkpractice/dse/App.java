@@ -26,34 +26,47 @@ public class App {
 
     public static void main(String[] args) {
 
+        // Authenticate to Azure
         DefaultAzureCredential credential = new DefaultAzureCredentialBuilder()
             .managedIdentityClientId(System.getenv("CLIENT_ID"))
             .build();
 
+        // Build Azure Key vault client
         SecretClient vaultClient = new SecretClientBuilder()
                 .vaultUrl("https://"+System.getenv("KEY_VAULT_NAME")+".vault.azure.net")
                 .credential(credential)
                 .buildClient();
 
+        // Setup geoCodesHandlerClient
         GeoCodesHandler geoCodesHandlerClient = new GeoCodesHandler(vaultClient.getSecret("open-cage-api-key").getValue());
 
-        SparkSession spark = SparkSession
-            .builder()
-            .master("local[*]")
-            .appName("SparkBasics")
-            .getOrCreate();
+        // Get storage account name and SPN data
+        String storageAccountName = vaultClient.getSecret("storage-account-name").getValue();
+        String clientId = vaultClient.getSecret("client-id").getValue();
+        String clientSecret = vaultClient.getSecret("client-secret").getValue();
+        String tenantId = vaultClient.getSecret("tenant-id").getValue();
 
+        // Build data location paths
+        String hotelSourcePath = "abfss://stage@"+storageAccountName+".dfs.core.windows.net/hotel";
+        String weatherSourcePath = "abfss://stage@"+storageAccountName+".dfs.core.windows.net/weather";
+        String refinedDataPath = "abfss://curated@"+storageAccountName+".dfs.core.windows.net/refined_data";
+
+        // Build Spark Session
+        SparkSession spark = SparkSession.builder().master("local[*]").appName("SparkBasics")
+                .config("fs.azure.account.auth.type."+storageAccountName+".dfs.core.windows.net", "OAuth")
+                .config("fs.azure.account.oauth.provider.type."+storageAccountName+".dfs.core.windows.net", "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider")
+                .config("fs.azure.account.oauth2.client.id."+storageAccountName+".dfs.core.windows.net", clientId)
+                .config("fs.azure.account.oauth2.client.secret."+storageAccountName+".dfs.core.windows.net", clientSecret)
+                .config("fs.azure.account.oauth2.client.endpoint."+storageAccountName+".dfs.core.windows.net", "https://login.microsoftonline.com/"+tenantId+"/oauth2/token")
+                .getOrCreate();
+
+        // Register UDF
         spark.udf().register("geohash", new GeoHashUDF(), DataTypes.StringType);
 
         StructType hotelSchema = null;
         DataFrameReader HotelCSVDataFrameReader = null;
 
-        try {
-            hotelSchema = SchemaManager.getSchemaFromFile("src/main/resources/schemas/hotel.json");
-        } catch (IOException e) {
-            System.out.println("caught exception reading the schema");
-            System.out.println(e.getMessage());
-        }
+        hotelSchema = SchemaManager.getSchemaFromFile("schemas/hotel.json");
 
         DataFrameReader CSVDataFrameReader = spark.read().format("csv")
                 .option("header", "true")
@@ -63,7 +76,7 @@ public class App {
         if (hotelSchema != null)
             HotelCSVDataFrameReader = HotelCSVDataFrameReader.schema(hotelSchema);
 
-        Dataset<Row> hotelDF = HotelCSVDataFrameReader.load("/mnt/sharedfolder1/m06sparkbasics/hotels");
+        Dataset<Row> hotelDF = HotelCSVDataFrameReader.load(hotelSourcePath);
         hotelDF = hotelDF.withColumn("AddressConcat", concat_ws(
                 ", ",
                 col("Name"),
@@ -71,6 +84,7 @@ public class App {
                 col("Country")
         ));
 
+        // Hotel address enrichment + GeoHash
         Dataset<Row> hotelOrphanCoordinatesDF = hotelDF.filter(col("latitude").isNull().or(col("longitude").isNull()));
         List<Row> hotelOrphanCoordinatesRowList = hotelOrphanCoordinatesDF.select(col("AddressConcat")).distinct().collectAsList();
         List<String> hotelOrphanCoordinatesList = hotelOrphanCoordinatesRowList.stream().map(x -> (String) x.getAs("AddressConcat")).collect(Collectors.toList());
@@ -104,7 +118,8 @@ public class App {
         );
         hotelDF.show(10, false);
 
-        Dataset<Row> weatherDF = spark.read().format("parquet").load("/mnt/sharedfolder1/m06sparkbasics/weather");
+        // Get weather dataframe and apply GeoHash
+        Dataset<Row> weatherDF = spark.read().format("parquet").load(weatherSourcePath);
         weatherDF = weatherDF.withColumn("geohash",
                 call_udf(
                         "geohash",
@@ -113,6 +128,7 @@ public class App {
                 )
         );
 
+        // Join dataframes
         Dataset<Row> joinedDF = weatherDF.alias("w").join(
                 hotelDF.alias("h"),
                 col("h.geohash").equalTo(col("w.geohash")),
@@ -134,12 +150,15 @@ public class App {
                 col("w.day")
         );
 
+        // Encrypt address with AES
         AESEncryptor encryptor = AESEncryptor.builder().key(vaultClient.getSecret("aes-encryption-key").getValue()).build();
         encryptor.setColumnList(new String[]{"name", "address"});
         joinedDF = joinedDF.transform(encryptor::aesEncrypt);
 
-        joinedDF.write().mode("overwrite").format("parquet").partitionBy("year", "month", "day").save("/mnt/sharedfolder1/m06sparkbasics/refined_data");
+        // Persist refined data in curated container
+        joinedDF.write().mode("overwrite").format("parquet").partitionBy("year", "month", "day").save(refinedDataPath);
 
+        // Close Spark Session
         spark.close();
     }
 }
